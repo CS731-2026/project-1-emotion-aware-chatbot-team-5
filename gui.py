@@ -1,6 +1,7 @@
 import sys
 import os
 import cv2
+import platform
 import speech_recognition as sr
 from ultralytics import YOLO
 from PyQt5.QtWidgets import (
@@ -23,10 +24,10 @@ from chatbot import EmotionAwareChatbot
 # -----------------------------------------------------------
 # CONFIGURATION
 # -----------------------------------------------------------
-MODEL_PATH       = "checkpoints/efficientnet/best.pt"  # Best trained model
+MODEL_PATH       = "checkpoints/8.pt"  # Best trained model
 YOLO_PATH        = "yolov8n-face.pt"                   # YOLOv8 face detector
 WEBCAM_INDEX     = 0                                    # Default webcam
-EMOTION_INTERVAL = 5                                   # Run detection every N frames
+EMOTION_INTERVAL = 1                                   # Run emotion detection every frame
 SMOOTH_WINDOW    = 8                                    # Smooth over last N detections
 
 # Emotion colours for the UI label
@@ -145,16 +146,16 @@ class EmotionChatbotGUI(QMainWindow):
         self._build_ui()
 
         # ---------------------------------------------------
-        # Start webcam with MJPG format (required for WSL)
+        # Start webcam: try multiple backends/indices and auto-select
         # ---------------------------------------------------
-        self.cap = cv2.VideoCapture(WEBCAM_INDEX, cv2.CAP_V4L2)
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.cap = self._open_camera(preferred_index=WEBCAM_INDEX)
 
-        if not self.cap.isOpened():
-            self._add_chat_message("System", "Webcam not found. Please check connection.")
+        if not self.cap or not self.cap.isOpened():
+            self._add_chat_message(
+                "System",
+                "Webcam not found. Please check connection and macOS Camera permissions for Terminal/Python."
+            )
+            print("Webcam not found — no usable camera index opened.")
         else:
             print("Webcam opened successfully ✓")
 
@@ -400,7 +401,8 @@ class EmotionChatbotGUI(QMainWindow):
         if message and emotion != self.last_auto_message_emotion:
             self.last_auto_message_emotion = emotion
             self._add_chat_message("AI", message)
-            self.chatbot.conversation_history.append({"role": "assistant", "content": message})
+            # NOTE: Do NOT add auto-emotion messages to conversation history
+            # Only user and real API responses should be in the conversation
 
     def _send_text_message(self):
         message = self.text_input.text().strip()
@@ -420,12 +422,18 @@ class EmotionChatbotGUI(QMainWindow):
         self.chat_thread.start()
 
     def _on_response_ready(self, response):
+        print(f"[GUI] Response received: {repr(response)}")
         emoji_map = {
             'happy': '😊', 'sad': '😢', 'angry': '😠',
             'fear': '😨', 'surprise': '😲', 'disgust': '🤢',
             'contempt': '😒', 'neutral': '😐'
         }
         emoji = emoji_map.get(self.current_emotion, '🤖')
+        
+        if not response or not response.strip():
+            response = "[No response received from AI]"
+            print(f"[GUI] WARNING: Empty response detected!")
+        
         self._add_chat_message(f"AI {emoji}", response)
         self._set_input_enabled(True)
         self.text_input.setFocus()
@@ -506,6 +514,61 @@ class EmotionChatbotGUI(QMainWindow):
         self.text_input.setEnabled(enabled)
         self.send_btn.setEnabled(enabled)
         self.voice_btn.setEnabled(enabled)
+
+    def _open_camera(self, preferred_index=0, max_search=5):
+        """Try to open a webcam using several backends and indices.
+
+        Returns an opened cv2.VideoCapture or None.
+        """
+        # Prefer AVFoundation on macOS
+        backends = []
+        system = platform.system().lower()
+        if system == 'darwin':
+            backends = [cv2.CAP_AVFOUNDATION, cv2.CAP_V4L2, cv2.CAP_MSMF]
+        elif system == 'windows':
+            backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_AVFOUNDATION]
+        else:
+            backends = [cv2.CAP_V4L2, cv2.CAP_MSMF, cv2.CAP_AVFOUNDATION]
+
+        tried = []
+        # First try preferred index with default constructor
+        try:
+            cap = cv2.VideoCapture(preferred_index)
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                cap.set(cv2.CAP_PROP_FPS, 30)
+                return cap
+            cap.release()
+        except Exception:
+            pass
+
+        # Iterate indices and backends
+        for idx in range(max_search):
+            for backend in backends:
+                try:
+                    cap = cv2.VideoCapture(idx, backend)
+                except Exception:
+                    # Some builds may not expose backend constants
+                    try:
+                        cap = cv2.VideoCapture(idx)
+                    except Exception:
+                        continue
+
+                if cap and cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    cap.set(cv2.CAP_PROP_FPS, 30)
+                    print(f"Opened camera index={idx} backend={backend}")
+                    return cap
+                tried.append((idx, backend))
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
+        print(f"Tried camera indices/backends: {tried}")
+        return None
 
     # -----------------------------------------------------------
     # STYLESHEET
