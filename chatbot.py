@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 # ============================================================
@@ -9,7 +10,7 @@ from dotenv import load_dotenv
 # Adapts responses based on detected facial emotion
 # ============================================================
 
-load_dotenv()  # Load OPENROUTER_API_KEY from .env file
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 # -----------------------------------------------------------
 # CONFIGURATION
@@ -158,6 +159,11 @@ class EmotionAwareChatbot:
                 timeout=30  # 30 second timeout
             )
 
+            if response.status_code != 200:
+                error_body = response.text.strip()
+                print(f"OpenRouter HTTP {response.status_code}: {error_body}")
+                return f"OpenRouter error ({response.status_code}): {error_body[:200]}"
+
             # Parse the response
             response_data = response.json()
 
@@ -183,6 +189,9 @@ class EmotionAwareChatbot:
 
         except requests.exceptions.ConnectionError:
             return "Connection error. Please check your internet connection."
+
+        except requests.exceptions.HTTPError as e:
+            return f"HTTP error from OpenRouter: {str(e)}"
 
         except Exception as e:
             return f"Unexpected error: {str(e)}"
